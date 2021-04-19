@@ -207,8 +207,8 @@ void GraphicsWindow::MakeSelected(Selection *stog) {
 //-----------------------------------------------------------------------------
 void GraphicsWindow::SelectByMarquee() {
     Point2d marqueePoint = ProjectPoint(orig.marqueePoint);
-    BBox marqueeBBox = BBox::From(Vector::From(marqueePoint.x, marqueePoint.y, -1),
-                                  Vector::From(orig.mouse.x,   orig.mouse.y,    1));
+    BBox marqueeBBox = BBox::From(Vector::From(marqueePoint.x, marqueePoint.y, VERY_NEGATIVE),
+                                  Vector::From(orig.mouse.x,   orig.mouse.y,   VERY_POSITIVE));
 
     Entity *e;
     for(e = SK.entity.First(); e; e = SK.entity.NextAfter(e)) {
@@ -305,9 +305,16 @@ void GraphicsWindow::GroupSelection() {
 
 Camera GraphicsWindow::GetCamera() const {
     Camera camera = {};
-    window->GetContentSize(&camera.width, &camera.height);
-    camera.pixelRatio = window->GetDevicePixelRatio();
-    camera.gridFit    = (window->GetDevicePixelRatio() == 1);
+    if(window) {
+        window->GetContentSize(&camera.width, &camera.height);
+        camera.pixelRatio = window->GetDevicePixelRatio();
+        camera.gridFit    = (window->GetDevicePixelRatio() == 1);
+    } else {    // solvespace-cli
+        camera.width = 297.0;   // A4? Whatever...
+        camera.height = 210.0;
+        camera.pixelRatio = 1.0;
+        camera.gridFit    = camera.pixelRatio == 1.0;
+    }
     camera.offset     = offset;
     camera.projUp     = projUp;
     camera.projRight  = projRight;
@@ -335,6 +342,8 @@ GraphicsWindow::Selection GraphicsWindow::ChooseFromHoverToSelect() {
     Group *activeGroup = SK.GetGroup(SS.GW.activeGroup);
     int bestOrder = -1;
     int bestZIndex = 0;
+    double bestDepth = VERY_POSITIVE;
+    
     for(const Hover &hov : hoverList) {
         hGroup hg = {};
         if(hov.selection.entity.v != 0) {
@@ -345,26 +354,49 @@ GraphicsWindow::Selection GraphicsWindow::ChooseFromHoverToSelect() {
 
         Group *g = SK.GetGroup(hg);
         if(g->order > activeGroup->order) continue;
-        if(bestOrder != -1 && (bestOrder >= g->order || bestZIndex > hov.zIndex)) continue;
+        if(bestOrder != -1 && (bestOrder > g->order || bestZIndex > hov.zIndex)) continue;
+        // we have hov.zIndex is >= best and hov.group is >= best (but not > active group)
+        if(hov.depth > bestDepth && bestOrder == g->order && bestZIndex == hov.zIndex) continue;
         bestOrder  = g->order;
         bestZIndex = hov.zIndex;
+        bestDepth = hov.depth;
         sel = hov.selection;
     }
     return sel;
 }
 
+// This uses the same logic as hovering and static entity selection
+// but ignores points known not to be draggable
 GraphicsWindow::Selection GraphicsWindow::ChooseFromHoverToDrag() {
     Selection sel = {};
-    for(const Hover &hov : hoverList) {
-        if(hov.selection.entity.v == 0) continue;
-        if(!hov.selection.entity.isFromRequest()) continue;
-        sel = hov.selection;
-        break;
-    }
-    if(!sel.IsEmpty()) {
+    if(hoverList.IsEmpty())
         return sel;
+
+    Group *activeGroup = SK.GetGroup(SS.GW.activeGroup);
+    int bestOrder = -1;
+    int bestZIndex = 0;
+    double bestDepth = VERY_POSITIVE;
+
+    for(const Hover &hov : hoverList) {
+        hGroup hg = {};
+        if(hov.selection.entity.v != 0) {
+            Entity *e = SK.GetEntity(hov.selection.entity);
+            if (!e->CanBeDragged()) continue;
+            hg = e->group;
+        } else if(hov.selection.constraint.v != 0) {
+            hg = SK.GetConstraint(hov.selection.constraint)->group;
+        }
+
+        Group *g = SK.GetGroup(hg);
+        if(g->order > activeGroup->order) continue;
+        if(bestOrder != -1 && (bestOrder > g->order || bestZIndex > hov.zIndex)) continue;
+        // we have hov.zIndex is >= best and hov.group is >= best (but not > active group)
+        if(hov.depth > bestDepth && bestOrder == g->order && bestZIndex == hov.zIndex) continue;
+        bestOrder  = g->order;
+        bestZIndex = hov.zIndex;
+        sel = hov.selection;
     }
-    return ChooseFromHoverToSelect();
+    return sel;
 }
 
 void GraphicsWindow::HitTestMakeSelection(Point2d mp) {
@@ -416,6 +448,7 @@ void GraphicsWindow::HitTestMakeSelection(Point2d mp) {
             Hover hov = {};
             hov.distance = canvas.minDistance;
             hov.zIndex   = canvas.maxZIndex;
+            hov.depth    = canvas.minDepth;
             hov.selection.entity = e.h;
             hoverList.Add(&hov);
         }
@@ -769,9 +802,13 @@ void GraphicsWindow::Draw(Canvas *canvas) {
         const double size = 10.0;
         const int subdiv = 16;
         double h = Style::DefaultTextHeight() / camera.scale;
-        canvas->DrawVectorText(ssprintf("%.3f, %.3f, %.3f", p.x, p.y, p.z), h,
+        std::string s =
+            SS.MmToStringSI(p.x) + ", " +
+            SS.MmToStringSI(p.y) + ", " +
+            SS.MmToStringSI(p.z);
+        canvas->DrawVectorText(s.c_str(), h,
                                p.Plus(u.ScaledBy((size + 5.0)/scale)).Minus(v.ScaledBy(h / 2.0)),
-                               u, v,hcsDatum);
+                               u, v, hcsDatum);
         u = u.WithMagnitude(size / scale);
         v = v.WithMagnitude(size / scale);
 

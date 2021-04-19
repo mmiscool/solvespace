@@ -142,7 +142,18 @@ static std::string NegateMnemonics(const std::string &label) {
     return newLabel;
 }
 
-static int Clamp(int x, int a, int b) {
+static int Clamp(int x, int a, int b, int brda, int brdb) {
+    // If we are outside of an edge of the monitor
+    // and a "border" is requested "move in" from that edge
+    // by "b/brdX" (the "b" parameter is the resolution)
+    if((x <= a) && (brda)) {
+        a += b / brda;  // yes "b/brda" since b is the size
+    }
+
+    if(((x >= b) && brdb)) {
+        b -= b / brdb;
+    }
+
     return max(a, min(x, b));
 }
 
@@ -183,7 +194,7 @@ public:
 
     HKEY GetKey() {
         if(hKey == NULL) {
-            sscheck(RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\SolveSpace", 0, NULL, 0,
+            sscheck(ERROR_SUCCESS == RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\SolveSpace", 0, NULL, 0,
                                     KEY_ALL_ACCESS, NULL, &hKey, NULL));
         }
         return hKey;
@@ -191,12 +202,12 @@ public:
 
     ~SettingsImplWin32() {
         if(hKey != NULL) {
-            sscheck(RegCloseKey(hKey));
+            sscheck(ERROR_SUCCESS == RegCloseKey(hKey));
         }
     }
 
     void FreezeInt(const std::string &key, uint32_t value) {
-        sscheck(RegSetValueExW(GetKey(), &Widen(key)[0], 0,
+        sscheck(ERROR_SUCCESS == RegSetValueExW(GetKey(), &Widen(key)[0], 0,
                                REG_DWORD, (const BYTE *)&value, sizeof(value)));
     }
 
@@ -212,7 +223,7 @@ public:
     }
 
     void FreezeFloat(const std::string &key, double value) {
-        sscheck(RegSetValueExW(GetKey(), &Widen(key)[0], 0,
+        sscheck(ERROR_SUCCESS == RegSetValueExW(GetKey(), &Widen(key)[0], 0,
                                REG_QWORD, (const BYTE *)&value, sizeof(value)));
     }
 
@@ -231,7 +242,7 @@ public:
         ssassert(value.length() == strlen(value.c_str()),
                  "illegal null byte in middle of a string setting");
         std::wstring valueW = Widen(value);
-        sscheck(RegSetValueExW(GetKey(), &Widen(key)[0], 0,
+        sscheck(ERROR_SUCCESS == RegSetValueExW(GetKey(), &Widen(key)[0], 0,
                                REG_SZ, (const BYTE *)&valueW[0], (valueW.length() + 1) * 2));
     }
 
@@ -242,7 +253,7 @@ public:
         if(result == ERROR_SUCCESS && type == REG_SZ) {
             std::wstring valueW;
             valueW.resize(length / 2 - 1);
-            sscheck(RegQueryValueExW(GetKey(), &Widen(key)[0], 0,
+            sscheck(ERROR_SUCCESS == RegQueryValueExW(GetKey(), &Widen(key)[0], 0,
                                      &type, (BYTE *)&valueW[0], &length));
             return Narrow(valueW);
         }
@@ -734,6 +745,11 @@ public:
                         event.type   = SixDofEvent::Type::RELEASE;
                         event.button = SixDofEvent::Button::FIT;
                     }
+                } else {
+                    return 0;
+                }
+                if(window->onSixDofEvent) {
+                    window->onSixDofEvent(event);
                 }
                 return 0;
             }
@@ -907,8 +923,8 @@ public:
                         // Make the mousewheel work according to which window the mouse is
                         // over, not according to which window is active.
                         POINT pt;
-                        pt.x = LOWORD(lParam);
-                        pt.y = HIWORD(lParam);
+                        pt.x = GET_X_LPARAM(lParam);
+                        pt.y = GET_Y_LPARAM(lParam);
                         HWND hWindowUnderMouse;
                         sscheck(hWindowUnderMouse = WindowFromPoint(pt));
                         if(hWindowUnderMouse && hWindowUnderMouse != h) {
@@ -917,8 +933,15 @@ public:
                             break;
                         }
 
+                        // Convert the mouse coordinates from screen to client area so that
+                        // scroll wheel zooming remains centered irrespective of the window
+                        // position.
+                        ScreenToClient(hWindowUnderMouse, &pt);
+                        event.x = pt.x / pixelRatio;
+                        event.y = pt.y / pixelRatio;
+
                         event.type = MouseEvent::Type::SCROLL_VERT;
-                        event.scrollDelta = GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? 1 : -1;
+                        event.scrollDelta = GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA;
                         break;
 
                     case WM_MOUSELEAVE:
@@ -1058,7 +1081,7 @@ public:
         sscheck(window = (WindowImplWin32 *)GetWindowLongPtr(hWindow, 0));
 
         switch(msg) {
-            case WM_KEYDOWN:
+            case WM_CHAR:
                 if(wParam == VK_RETURN) {
                     if(window->onEditingDone) {
                         int length;
@@ -1072,7 +1095,7 @@ public:
                         return 0;
                     }
                 } else if(wParam == VK_ESCAPE) {
-                    sscheck(SendMessageW(hWindow, msg, wParam, lParam));
+                    window->HideEditor();
                     return 0;
                 }
         }
@@ -1094,12 +1117,12 @@ public:
 
     bool IsVisible() override {
         BOOL isVisible;
-        sscheck(isVisible = IsWindowVisible(hWindow));
+        isVisible = IsWindowVisible(hWindow);
         return isVisible == TRUE;
     }
 
     void SetVisible(bool visible) override {
-        sscheck(ShowWindow(hWindow, visible ? SW_SHOW : SW_HIDE));
+        ShowWindow(hWindow, visible ? SW_SHOW : SW_HIDE);
     }
 
     void Focus() override {
@@ -1206,11 +1229,14 @@ public:
         sscheck(GetMonitorInfo(MonitorFromRect(&rc, MONITOR_DEFAULTTONEAREST), &mi));
 
         // If it somehow ended up off-screen, then put it back.
+        // and make it visible by at least this portion of the scrren
+        const LONG movein = 40;
+
         RECT mrc = mi.rcMonitor;
-        rc.left   = Clamp(rc.left,   mrc.left, mrc.right);
-        rc.right  = Clamp(rc.right,  mrc.left, mrc.right);
-        rc.top    = Clamp(rc.top,    mrc.top,  mrc.bottom);
-        rc.bottom = Clamp(rc.bottom, mrc.top,  mrc.bottom);
+        rc.left   = Clamp(rc.left,   mrc.left, mrc.right, 0, movein);
+        rc.right  = Clamp(rc.right,  mrc.left, mrc.right, movein, 0);
+        rc.top    = Clamp(rc.top,    mrc.top,  mrc.bottom, 0, movein);
+        rc.bottom = Clamp(rc.bottom, mrc.top,  mrc.bottom, movein, 0);
 
         // And make sure the minimum size is respected. (We can freeze a size smaller
         // than minimum size if the DPI changed between runs.)
@@ -1267,7 +1293,7 @@ public:
 
     bool IsEditorVisible() override {
         BOOL visible;
-        sscheck(visible = IsWindowVisible(hEditor));
+        visible = IsWindowVisible(hEditor);
         return visible == TRUE;
     }
 
@@ -1309,7 +1335,7 @@ public:
 
         sscheck(MoveWindow(hEditor, rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top,
                            /*bRepaint=*/true));
-        sscheck(ShowWindow(hEditor, SW_SHOW));
+        ShowWindow(hEditor, SW_SHOW);
         if(!textW.empty()) {
             sscheck(SendMessageW(hEditor, WM_SETTEXT, 0, (LPARAM)textW.c_str()));
             sscheck(SendMessageW(hEditor, EM_SETSEL, 0, textW.length()));
@@ -1320,7 +1346,7 @@ public:
     void HideEditor() override {
         if(!IsEditorVisible()) return;
 
-        sscheck(ShowWindow(hEditor, SW_HIDE));
+        ShowWindow(hEditor, SW_HIDE);
     }
 
     void SetScrollbarVisible(bool visible) override {
@@ -1335,7 +1361,7 @@ public:
         si.nMin   = (UINT)(min * SCROLLBAR_UNIT);
         si.nMax   = (UINT)(max * SCROLLBAR_UNIT);
         si.nPage  = (UINT)(pageSize * SCROLLBAR_UNIT);
-        sscheck(SetScrollInfo(hWindow, SB_VERT, &si, /*redraw=*/TRUE));
+        SetScrollInfo(hWindow, SB_VERT, &si, /*redraw=*/TRUE);  // Returns scrollbar position
     }
 
     double GetScrollbarPosition() override {
@@ -1359,7 +1385,7 @@ public:
             return;
 
         si.nPos   = (int)(pos * SCROLLBAR_UNIT);
-        sscheck(SetScrollInfo(hWindow, SB_VERT, &si, /*redraw=*/TRUE));
+        SetScrollInfo(hWindow, SB_VERT, &si, /*redraw=*/TRUE); // Returns scrollbar position
 
         // Windows won't synthesize a WM_VSCROLL for us here.
         if(onScrollbarAdjusted) {
@@ -1443,7 +1469,10 @@ public:
     void SetType(Type type) override {
         switch(type) {
             case Type::INFORMATION:
-                style = MB_ICONINFORMATION;
+                style         = MB_USERICON; // Avoid beep
+                mbp.hInstance = GetModuleHandle(NULL);
+                mbp.lpszIcon  = MAKEINTRESOURCE(4000);  // Use SolveSpace icon
+                // mbp.lpszIcon = IDI_INFORMATION;
                 break;
 
             case Type::QUESTION:
@@ -1455,7 +1484,10 @@ public:
                 break;
 
             case Type::ERROR:
-                style = MB_ICONERROR;
+                style         = MB_USERICON; // Avoid beep
+                mbp.hInstance = GetModuleHandle(NULL);
+                mbp.lpszIcon  = MAKEINTRESOURCE(4000); // Use SolveSpace icon
+                // mbp.lpszIcon = IDI_ERROR;
                 break;
         }
     }
@@ -1551,11 +1583,6 @@ public:
         ofn.nMaxFile    = sizeof(filenameWC) / sizeof(wchar_t);
         ofn.Flags       = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_HIDEREADONLY |
                           OFN_OVERWRITEPROMPT;
-        if(isSaveDialog) {
-            SetTitle(C_("title", "Save File"));
-        } else {
-            SetTitle(C_("title", "Open File"));
-        }
     }
 
     void SetTitle(std::string title) override {
@@ -1573,6 +1600,10 @@ public:
 
     void SetFilename(Platform::Path path) override {
         wcsncpy(filenameWC, Widen(path.raw).c_str(), sizeof(filenameWC) / sizeof(wchar_t) - 1);
+    }
+
+    void SuggestFilename(Platform::Path path) override {
+        SetFilename(Platform::Path::From(path.FileStem()));
     }
 
     void AddFilter(std::string name, std::vector<std::string> extensions) override {
@@ -1604,13 +1635,14 @@ public:
     }
 
     bool RunModal() override {
-        if(GetFilename().IsEmpty()) {
-            SetFilename(Path::From(_("untitled")));
-        }
-
         if(isSaveDialog) {
+            SetTitle(C_("title", "Save File"));
+            if(GetFilename().IsEmpty()) {
+                SetFilename(Path::From(_("untitled")));
+            }
             return GetSaveFileNameW(&ofn) == TRUE;
         } else {
+            SetTitle(C_("title", "Open File"));
             return GetOpenFileNameW(&ofn) == TRUE;
         }
     }

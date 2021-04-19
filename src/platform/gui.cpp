@@ -85,6 +85,11 @@ std::vector<FileFilter> SolveSpaceModelFileFilters = {
     { CN_("file-type", "SolveSpace models"), { "slvs" } },
 };
 
+std::vector<FileFilter> SolveSpaceLinkFileFilters = {
+    { CN_("file-type", "SolveSpace models"), { "slvs" } },
+    { CN_("file-type", "IDF circuit board"), { "emn" } },
+};
+
 std::vector<FileFilter> RasterFileFilters = {
     { CN_("file-type", "PNG image"), { "png" } },
 };
@@ -94,7 +99,6 @@ std::vector<FileFilter> MeshFileFilters = {
     { CN_("file-type", "Wavefront OBJ mesh"), { "obj" } },
     { CN_("file-type", "Three.js-compatible mesh, with viewer"), { "html" } },
     { CN_("file-type", "Three.js-compatible mesh, mesh only"), { "js" } },
-    { CN_("file-type", "Q3D Object file"), { "q3do" } },
     { CN_("file-type", "VRML text file"), { "wrl" } },
 };
 

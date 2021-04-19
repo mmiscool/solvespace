@@ -32,7 +32,7 @@ if(WIN32)
         set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${source}")
     endfunction()
 elseif(APPLE)
-    set(app_resource_dir ${CMAKE_BINARY_DIR}/bin/SolveSpace.app/Contents/Resources)
+    set(app_resource_dir ${CMAKE_BINARY_DIR}/Resources)
     set(cli_resource_dir ${CMAKE_BINARY_DIR}/res)
 
     function(add_resource name)
@@ -231,6 +231,7 @@ add_resources(
     icons/graphics-window/construction.png
     icons/graphics-window/equal.png
     icons/graphics-window/extrude.png
+    icons/graphics-window/helix.png
     icons/graphics-window/horiz.png
     icons/graphics-window/image.png
     icons/graphics-window/in3d.png
@@ -245,6 +246,7 @@ add_resources(
     icons/graphics-window/point.png
     icons/graphics-window/rectangle.png
     icons/graphics-window/ref.png
+    icons/graphics-window/revolve.png
     icons/graphics-window/same-orientation.png
     icons/graphics-window/sketch-in-3d.png
     icons/graphics-window/sketch-in-plane.png
@@ -273,7 +275,9 @@ add_resources(
     locales/en_US.po
     locales/fr_FR.po
     locales/uk_UA.po
+    locales/tr_TR.po
     locales/ru_RU.po
+    locales/zh_CN.po
     fonts/unifont.hex.gz
     fonts/private/0-check-false.png
     fonts/private/1-check-true.png
@@ -299,7 +303,7 @@ add_resources(
     shaders/edge.frag
     shaders/edge.vert
     shaders/outline.vert
-    threejs/three-r76.js.gz
+    threejs/three-r111.min.js.gz
     threejs/hammer-2.0.8.js.gz
     threejs/SolveSpaceControls.js)
 

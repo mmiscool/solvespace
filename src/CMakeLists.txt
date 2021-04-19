@@ -6,11 +6,6 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_BINARY_DIR})
 
-set(HAVE_BACKTRACE ${Backtrace_FOUND})
-if(HAVE_BACKTRACE)
-    set(BACKTRACE_HEADER <${Backtrace_HEADER}>)
-endif()
-
 set(HAVE_SPACEWARE ${SPACEWARE_FOUND})
 
 if(NOT WIN32 OR APPLE)
@@ -59,7 +54,11 @@ target_include_directories(slvs
     PUBLIC ${CMAKE_SOURCE_DIR}/include)
 
 target_link_libraries(slvs
-    ${util_LIBRARIES})
+    ${util_LIBRARIES}
+    mimalloc-static)
+
+add_dependencies(slvs
+    mimalloc-static)
 
 set_target_properties(slvs PROPERTIES
     PUBLIC_HEADER ${CMAKE_SOURCE_DIR}/include/slvs.h
@@ -81,7 +80,8 @@ include_directories(
     ${PNG_PNG_INCLUDE_DIR}
     ${FREETYPE_INCLUDE_DIRS}
     ${CAIRO_INCLUDE_DIRS}
-    ${Q3D_INCLUDE_DIR})
+    ${MIMALLOC_INCLUDE_DIR}
+    ${OpenMP_CXX_INCLUDE_DIRS})
 
 if(Backtrace_FOUND)
     include_directories(
@@ -179,6 +179,7 @@ set(solvespace_core_SOURCES
     group.cpp
     groupmesh.cpp
     importdxf.cpp
+    importidf.cpp
     mesh.cpp
     modify.cpp
     mouse.cpp
@@ -217,7 +218,7 @@ add_library(solvespace-core STATIC
     ${solvespace_core_SOURCES})
 
 add_dependencies(solvespace-core
-    q3d_header)
+    mimalloc-static)
 
 target_link_libraries(solvespace-core
     ${OpenMP_CXX_LIBRARIES}
@@ -226,7 +227,7 @@ target_link_libraries(solvespace-core
     ${ZLIB_LIBRARY}
     ${PNG_LIBRARY}
     ${FREETYPE_LIBRARY}
-    flatbuffers)
+    mimalloc-static)
 
 if(Backtrace_FOUND)
     target_link_libraries(solvespace-core
@@ -242,7 +243,8 @@ if(HAVE_GETTEXT)
     set(inputs
         ${solvespace_core_SOURCES}
         ${solvespace_core_HEADERS}
-        ${every_platform_SOURCES})
+        ${every_platform_SOURCES}
+        ${solvespace_core_gl_SOURCES})
 
     set(templ_po   ${CMAKE_CURRENT_BINARY_DIR}/../res/messages.po)
 
@@ -340,6 +342,7 @@ if(ENABLE_GUI)
             LINK_FLAGS "/MANIFEST:NO /SAFESEH:NO /INCREMENTAL:NO /OPT:REF")
     elseif(APPLE)
         set_target_properties(solvespace PROPERTIES
+<<<<<<< HEAD
             OUTPUT_NAME SolveSpace)
     elseif(EMSCRIPTEN)
         set(SHELL ${CMAKE_CURRENT_SOURCE_DIR}/platform/html/emshell.html)
@@ -380,6 +383,12 @@ if(ENABLE_GUI)
                     ${EXECUTABLE_OUTPUT_PATH}/solvespaceui.js
             COMMENT "Copying UI script"
             VERBATIM)
+=======
+            OUTPUT_NAME SolveSpace
+            XCODE_ATTRIBUTE_ENABLE_HARDENED_RUNTIME "YES"
+            XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "com.solvespace"
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+>>>>>>> master
     endif()
 endif()
 
@@ -442,22 +451,30 @@ endif()
 # solvespace macOS package
 
 if(APPLE)
-    set(bundle     SolveSpace)
-    set(bundle_bin ${EXECUTABLE_OUTPUT_PATH}/${bundle}.app/Contents/MacOS)
-
-    add_custom_command(TARGET solvespace POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${bundle_bin}
-        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:solvespace-cli> ${bundle_bin}
-        COMMENT "Bundling executable solvespace-cli"
-        VERBATIM)
-
-    add_custom_command(OUTPUT ${EXECUTABLE_OUTPUT_PATH}/${bundle}.dmg
-        COMMAND ${CMAKE_COMMAND} -E remove ${EXECUTABLE_OUTPUT_PATH}/${bundle}.dmg
-        COMMAND hdiutil create -srcfolder ${EXECUTABLE_OUTPUT_PATH}/${bundle}.app
-                ${EXECUTABLE_OUTPUT_PATH}/${bundle}.dmg
-        DEPENDS solvespace
-        COMMENT "Building ${bundle}.dmg"
-        VERBATIM)
-    add_custom_target(${bundle}-dmg ALL
-        DEPENDS ${EXECUTABLE_OUTPUT_PATH}/${bundle}.dmg)
+    set(LIBOMP_LIB_PATH ${OpenMP_CXX_INCLUDE_DIRS}/../lib/libomp.dylib)
+    set(LIBOMP_LINK_PATH "@executable_path/../Resources/libomp.dylib")
+    set(LIBOMP_LINK_PATH_UTILS "@executable_path/SolveSpace.app/Contents/Resources/libomp.dylib")
+    if(ENABLE_GUI)
+        add_custom_command(TARGET solvespace POST_BUILD
+            COMMAND cp -r ${CMAKE_BINARY_DIR}/Resources $<TARGET_BUNDLE_CONTENT_DIR:solvespace>
+        )
+        if(ENABLE_OPENMP)
+            execute_process(COMMAND install_name_tool -id ${LIBOMP_LINK_PATH} ${LIBOMP_LIB_PATH})
+            message("FROM " ${${LIBOMP_LIB_PATH}} "TO" $<TARGET_BUNDLE_CONTENT_DIR:solvespace>/Resources/libomp.dylib)
+            add_custom_command(TARGET solvespace POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy ${LIBOMP_LIB_PATH} $<TARGET_BUNDLE_CONTENT_DIR:solvespace>/Resources/libomp.dylib
+                COMMAND install_name_tool -change ${LIBOMP_LINK_PATH} ${LIBOMP_LINK_PATH_UTILS} $<TARGET_FILE:solvespace-debugtool>
+            )
+        endif()
+    endif()
+    if(ENABLE_TESTS AND ENABLE_OPENMP)
+        add_custom_command(TARGET solvespace POST_BUILD
+            COMMAND install_name_tool -change ${LIBOMP_LINK_PATH} ${LIBOMP_LINK_PATH_UTILS} $<TARGET_FILE:solvespace-testsuite>)
+    endif()
+    if(ENABLE_CLI)
+        add_custom_command(TARGET solvespace POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:solvespace-cli> $<TARGET_FILE_DIR:solvespace>
+            COMMENT "Bundling executable solvespace-cli"
+            VERBATIM)
+    endif()
 endif()

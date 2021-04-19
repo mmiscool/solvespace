@@ -101,9 +101,7 @@ std::string AcceleratorDescription(const KeyboardEvent &accel);
 //-----------------------------------------------------------------------------
 
 // Handling fatal errors.
-#if defined(__GNUC__)
-__attribute__((noreturn))
-#endif
+[[noreturn]]
 void FatalError(const std::string &message);
 
 // A native settings store.
@@ -332,6 +330,8 @@ struct FileFilter {
 
 // SolveSpace's native file format
 extern std::vector<FileFilter> SolveSpaceModelFileFilters;
+// SolveSpace's linkable file formats
+extern std::vector<FileFilter> SolveSpaceLinkFileFilters;
 // Raster image
 extern std::vector<FileFilter> RasterFileFilters;
 // Triangle mesh
@@ -357,6 +357,7 @@ public:
 
     virtual Platform::Path GetFilename() = 0;
     virtual void SetFilename(Platform::Path path) = 0;
+    virtual void SuggestFilename(Platform::Path path) = 0;
 
     virtual void AddFilter(std::string name, std::vector<std::string> extensions) = 0;
     void AddFilter(const FileFilter &filter);

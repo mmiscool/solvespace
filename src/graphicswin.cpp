@@ -92,6 +92,7 @@ const MenuEntry Menu[] = {
 { 1, N_("&Center View At Point"),       Command::CENTER_VIEW,      F|4,     KN, mView  },
 { 1,  NULL,                             Command::NONE,             0,       KN, NULL   },
 { 1, N_("Show Snap &Grid"),             Command::SHOW_GRID,        '>',     KC, mView  },
+{ 1, N_("Darken Inactive Solids"),      Command::DIM_SOLID_MODEL,  0,       KC, mView  },
 { 1, N_("Use &Perspective Projection"), Command::PERSPECTIVE_PROJ, '`',     KC, mView  },
 { 1, N_("Dimension &Units"),            Command::NONE,             0,       KN, NULL  },
 { 2, N_("Dimensions in &Millimeters"),  Command::UNITS_MM,         0,       KR, mView },
@@ -312,6 +313,8 @@ void GraphicsWindow::PopulateMainMenu() {
 
             if(Menu[i].cmd == Command::SHOW_GRID) {
                 showGridMenuItem = menuItem;
+            } else if(Menu[i].cmd == Command::DIM_SOLID_MODEL) {
+                dimSolidModelMenuItem = menuItem;
             } else if(Menu[i].cmd == Command::PERSPECTIVE_PROJ) {
                 perspectiveProjMenuItem = menuItem;
             } else if(Menu[i].cmd == Command::SHOW_TOOLBAR) {
@@ -366,8 +369,11 @@ static void PopulateMenuWithPathnames(Platform::MenuRef menu,
 
 void GraphicsWindow::PopulateRecentFiles() {
     PopulateMenuWithPathnames(openRecentMenu, SS.recentFiles, [](const Platform::Path &path) {
+        // OkayToStartNewFile could mutate recentFiles, which will invalidate path (which is a
+        // refererence into the recentFiles vector), so take a copy of it here.
+        Platform::Path pathCopy(path);
         if(!SS.OkayToStartNewFile()) return;
-        SS.Load(path);
+        SS.Load(pathCopy);
     });
 
     PopulateMenuWithPathnames(linkRecentMenu, SS.recentFiles, [](const Platform::Path &path) {
@@ -406,6 +412,7 @@ void GraphicsWindow::Init() {
     showTextWindow = true;
 
     showSnapGrid = false;
+    dimSolidModel = true;
     context.active = false;
     toolbarHovered = Command::NONE;
 
@@ -727,6 +734,12 @@ void GraphicsWindow::MenuView(Command id) {
             }
             break;
 
+        case Command::DIM_SOLID_MODEL:
+            SS.GW.dimSolidModel = !SS.GW.dimSolidModel;
+            SS.GW.EnsureValidActives();
+            SS.GW.Invalidate(/*clearPersistent=*/true);
+            break;
+
         case Command::PERSPECTIVE_PROJ:
             SS.usePerspectiveProj = !SS.usePerspectiveProj;
             SS.GW.EnsureValidActives();
@@ -928,6 +941,7 @@ void GraphicsWindow::EnsureValidActives() {
     showTextWndMenuItem->SetActive(SS.GW.showTextWindow);
 
     showGridMenuItem->SetActive(SS.GW.showSnapGrid);
+    dimSolidModelMenuItem->SetActive(SS.GW.dimSolidModel);
     perspectiveProjMenuItem->SetActive(SS.usePerspectiveProj);
     showToolbarMenuItem->SetActive(SS.showToolbar);
     fullScreenMenuItem->SetActive(SS.GW.window->IsFullScreen());
@@ -959,9 +973,17 @@ void GraphicsWindow::ForceTextWindowShown() {
 }
 
 void GraphicsWindow::DeleteTaggedRequests() {
+    Request *r;
+    // Delete any requests that were affected by this deletion.
+    for(r = SK.request.First(); r; r = SK.request.NextAfter(r)) {
+        if(r->workplane == Entity::FREE_IN_3D) continue;
+        if(!r->workplane.isFromRequest()) continue;
+        Request *wrkpl = SK.GetRequest(r->workplane.request());
+        if(wrkpl->tag)
+            r->tag = 1;
+    }
     // Rewrite any point-coincident constraints that were affected by this
     // deletion.
-    Request *r;
     for(r = SK.request.First(); r; r = SK.request.NextAfter(r)) {
         if(!r->tag) continue;
         FixConstraintsForRequestBeingDeleted(r->h);
@@ -1172,10 +1194,7 @@ void GraphicsWindow::MenuEdit(Command id) {
             }
             // Regenerate, with these points marked as dragged so that they
             // get placed as close as possible to our snap grid.
-            SS.GW.ClearPending();
-
             SS.GW.ClearSelection();
-            SS.GW.Invalidate();
             break;
         }
 
@@ -1224,6 +1243,8 @@ void GraphicsWindow::MenuRequest(Command id) {
             if(SS.GW.gs.n == 1 && SS.GW.gs.workplanes == 1) {
                 // A user-selected workplane
                 g->activeWorkplane = SS.GW.gs.entity[0];
+                SS.GW.EnsureValidActives();
+                SS.ScheduleShowTW();
             } else if(g->type == Group::Type::DRAWING_WORKPLANE) {
                 // The group's default workplane
                 g->activeWorkplane = g->h.entity(0);
@@ -1238,6 +1259,8 @@ void GraphicsWindow::MenuRequest(Command id) {
                         "not have a default workplane. Try selecting a "
                         "workplane, or activating a sketch-in-new-workplane "
                         "group."));
+                //update checkboxes in the menus
+                SS.GW.EnsureValidActives();
             }
             break;
         }
@@ -1289,6 +1312,20 @@ c:
             break;
 
         case Command::CONSTRUCTION: {
+            // if we are drawing
+            if(SS.GW.pending.operation == Pending::DRAGGING_NEW_POINT ||
+               SS.GW.pending.operation == Pending::DRAGGING_NEW_LINE_POINT ||
+               SS.GW.pending.operation == Pending::DRAGGING_NEW_ARC_POINT ||
+               SS.GW.pending.operation == Pending::DRAGGING_NEW_CUBIC_POINT ||
+               SS.GW.pending.operation == Pending::DRAGGING_NEW_RADIUS) {
+                for(auto &hr : SS.GW.pending.requests) {
+                    Request* r = SK.GetRequest(hr);
+                    r->construction = !(r->construction);
+                    SS.MarkGroupDirty(r->group);
+                }
+                SS.GW.Invalidate();
+                break;
+            }
             SS.GW.GroupSelection();
             if(SS.GW.gs.entities == 0) {
                 Error(_("No entities are selected. Select entities before "

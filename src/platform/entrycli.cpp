@@ -4,6 +4,7 @@
 // Copyright 2016 whitequark
 //-----------------------------------------------------------------------------
 #include "solvespace.h"
+#include "config.h"
 
 static void ShowUsage(const std::string &cmd) {
     fprintf(stderr, "Usage: %s <command> <options> <filename> [filename...]", cmd.c_str());
@@ -25,14 +26,19 @@ Common options:
         piecewise linear, and exact surfaces into triangle meshes.
         For export commands, the unit is mm, and the default is 1.0 mm.
         For non-export commands, the unit is %%, and the default is 1.0 %%.
+    -b, --bg-color <on|off>
+        Whether to export the background colour in vector formats. Defaults to off.
 
 Commands:
+    version
+        Prints the current solvespace version.
     thumbnail --output <pattern> --size <size> --view <direction>
               [--chord-tol <tolerance>]
         Outputs a rendered view of the sketch, like the SolveSpace GUI would.
         <size> is <width>x<height>, in pixels. Graphics acceleration is
         not used, and the output may look slightly different from the GUI.
     export-view --output <pattern> --view <direction> [--chord-tol <tolerance>]
+                [--bg-color <on|off>]
         Exports a view of the sketch, in a 2d vector format.
     export-wireframe --output <pattern> [--chord-tol <tolerance>]
         Exports a wireframe of the sketch, in a 3d vector format.
@@ -118,22 +124,22 @@ static bool RunCommand(const std::vector<std::string> args) {
             argn++;
             if(args[argn] == "top") {
                 projRight = Vector::From(1, 0, 0);
-                projUp    = Vector::From(0, 1, 0);
+                projUp    = Vector::From(0, 0, -1);
             } else if(args[argn] == "bottom") {
-                projRight = Vector::From(-1, 0, 0);
-                projUp    = Vector::From(0, 1, 0);
-            } else if(args[argn] == "left") {
-                projRight = Vector::From(0, 1, 0);
-                projUp    = Vector::From(0, 0, 1);
-            } else if(args[argn] == "right") {
-                projRight = Vector::From(0, -1, 0);
-                projUp    = Vector::From(0, 0, 1);
-            } else if(args[argn] == "front") {
-                projRight = Vector::From(-1, 0, 0);
-                projUp    = Vector::From(0, 0, 1);
-            } else if(args[argn] == "back") {
                 projRight = Vector::From(1, 0, 0);
                 projUp    = Vector::From(0, 0, 1);
+            } else if(args[argn] == "left") {
+                projRight = Vector::From(0, 0, 1);
+                projUp    = Vector::From(0, 1, 0);
+            } else if(args[argn] == "right") {
+                projRight = Vector::From(0, 0, -1);
+                projUp    = Vector::From(0, 1, 0);
+            } else if(args[argn] == "front") {
+                projRight = Vector::From(1, 0, 0);
+                projUp    = Vector::From(0, 1, 0);
+            } else if(args[argn] == "back") {
+                projRight = Vector::From(-1, 0, 0);
+                projUp    = Vector::From(0, 1, 0);
             } else if(args[argn] == "isometric") {
                 projRight = Vector::From(0.707,  0.000, -0.707);
                 projUp    = Vector::From(-0.408, 0.816, -0.408);
@@ -155,8 +161,26 @@ static bool RunCommand(const std::vector<std::string> args) {
         } else return false;
     };
 
+    bool bg_color = false;
+    auto ParseBgColor = [&](size_t &argn) {
+        if(argn + 1 < args.size() && (args[argn] == "--bg-color" ||
+                                      args[argn] == "-b")) {
+            argn++;
+            if(args[argn] == "on") {
+                bg_color = true;
+                return true;
+            } else if(args[argn] == "off") {
+                bg_color = false;
+                return true;
+            } else return false;
+        } else return false;
+    };
+
     unsigned width = 0, height = 0;
-    if(args[1] == "thumbnail") {
+    if(args[1] == "version") {
+        fprintf(stderr, "SolveSpace version %s \n\n", PACKAGE_VERSION);
+        return false;
+    } else if(args[1] == "thumbnail") {
         auto ParseSize = [&](size_t &argn) {
             if(argn + 1 < args.size() && args[argn] == "--size") {
                 argn++;
@@ -193,13 +217,14 @@ static bool RunCommand(const std::vector<std::string> args) {
             camera.gridFit    = true;
             camera.width      = width;
             camera.height     = height;
-            camera.projUp     = SS.GW.projUp;
-            camera.projRight  = SS.GW.projRight;
+            camera.projUp     = projUp;
+            camera.projRight  = projRight;
 
             SS.GW.projUp      = projUp;
             SS.GW.projRight   = projRight;
             SS.GW.scale       = SS.GW.ZoomToFit(camera);
             camera.scale      = SS.GW.scale;
+            camera.offset     = SS.GW.offset;
             SS.GenerateAll();
 
             CairoPixmapRenderer pixmapCanvas;
@@ -221,7 +246,8 @@ static bool RunCommand(const std::vector<std::string> args) {
             if(!(ParseInputFile(argn) ||
                  ParseOutputPattern(argn) ||
                  ParseViewDirection(argn) ||
-                 ParseChordTolerance(argn))) {
+                 ParseChordTolerance(argn) ||
+                 ParseBgColor(argn))) {
                 fprintf(stderr, "Unrecognized option '%s'.\n", args[argn].c_str());
                 return false;
             }
@@ -233,9 +259,10 @@ static bool RunCommand(const std::vector<std::string> args) {
         }
 
         runner = [&](const Platform::Path &output) {
-            SS.GW.projRight   = projRight;
-            SS.GW.projUp      = projUp;
-            SS.exportChordTol = chordTol;
+            SS.GW.projRight          = projRight;
+            SS.GW.projUp             = projUp;
+            SS.exportChordTol        = chordTol;
+            SS.exportBackgroundColor = bg_color;
 
             SS.ExportViewOrWireframeTo(output, /*exportWireframe=*/false);
         };

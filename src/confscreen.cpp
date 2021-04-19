@@ -5,6 +5,9 @@
 // Copyright 2008-2013 Jonathan Westhues.
 //-----------------------------------------------------------------------------
 #include "solvespace.h"
+#if defined(_OPENMP)
+#include <omp.h>
+#endif
 
 void TextWindow::ScreenChangeLightDirection(int link, uint32_t v) {
     SS.TW.ShowEditControl(8, ssprintf("%.2f, %.2f, %.2f", CO(SS.lightDir[v])));
@@ -16,6 +19,12 @@ void TextWindow::ScreenChangeLightIntensity(int link, uint32_t v) {
     SS.TW.ShowEditControl(31, ssprintf("%.2f", SS.lightIntensity[v]));
     SS.TW.edit.meaning = Edit::LIGHT_INTENSITY;
     SS.TW.edit.i = v;
+}
+
+void TextWindow::ScreenChangeLightAmbient(int link, uint32_t v) {
+    SS.TW.ShowEditControl(31, ssprintf("%.2f", SS.ambientIntensity));
+    SS.TW.edit.meaning = Edit::LIGHT_AMBIENT;
+    SS.TW.edit.i = 0;
 }
 
 void TextWindow::ScreenChangeColor(int link, uint32_t v) {
@@ -86,6 +95,10 @@ void TextWindow::ScreenChangeExportOffset(int link, uint32_t v) {
 
 void TextWindow::ScreenChangeFixExportColors(int link, uint32_t v) {
     SS.fixExportColors = !SS.fixExportColors;
+}
+
+void TextWindow::ScreenChangeExportBackgroundColor(int link, uint32_t v) {
+    SS.exportBackgroundColor = !SS.exportBackgroundColor;
 }
 
 void TextWindow::ScreenChangeBackFaces(int link, uint32_t v) {
@@ -194,6 +207,11 @@ void TextWindow::ScreenChangeAutosaveInterval(int link, uint32_t v) {
     SS.TW.edit.meaning = Edit::AUTOSAVE_INTERVAL;
 }
 
+void TextWindow::ScreenChangeFindConstraintTimeout(int link, uint32_t v) {
+    SS.TW.ShowEditControl(3, std::to_string(SS.timeoutRedundantConstr));
+    SS.TW.edit.meaning = Edit::FIND_CONSTRAINT_TIMEOUT;
+}
+
 void TextWindow::ShowConfiguration() {
     int i;
     Printf(true, "%Ft user color (r, g, b)");
@@ -218,6 +236,8 @@ void TextWindow::ShowConfiguration() {
             CO(SS.lightDir[i]), i, &ScreenChangeLightDirection,
             SS.lightIntensity[i], i, &ScreenChangeLightIntensity);
     }
+    Printf(false, "%Ba         ambient lighting     %2 %Fl%f%Ll[c]%E",
+        SS.ambientIntensity, &ScreenChangeLightAmbient);
 
     Printf(false, "");
     Printf(false, "%Ft chord tolerance (in percents)%E");
@@ -289,6 +309,9 @@ void TextWindow::ShowConfiguration() {
     Printf(false, "  %Fd%f%Ll%s  fix white exported lines%E",
         &ScreenChangeFixExportColors,
         SS.fixExportColors ? CHECK_TRUE : CHECK_FALSE);
+    Printf(false, "  %Fd%f%Ll%s  export background color%E",
+        &ScreenChangeExportBackgroundColor,
+        SS.exportBackgroundColor ? CHECK_TRUE : CHECK_FALSE);
 
     Printf(false, "");
     Printf(false, "%Ft export canvas size:  "
@@ -354,6 +377,10 @@ void TextWindow::ShowConfiguration() {
     Printf(false, "%Ft autosave interval (in minutes)%E");
     Printf(false, "%Ba   %d %Fl%Ll%f[change]%E",
         SS.autosaveInterval, &ScreenChangeAutosaveInterval);
+    Printf(false, "");
+    Printf(false, "%Ft redundant constraint timeout (in ms)%E");
+    Printf(false, "%Ba   %d %Fl%Ll%f[change]%E",
+        SS.timeoutRedundantConstr, &ScreenChangeFindConstraintTimeout);
 
     if(canvas) {
         const char *gl_vendor, *gl_renderer, *gl_version;
@@ -363,6 +390,11 @@ void TextWindow::ShowConfiguration() {
         Printf(false, " %Ft   renderer %E%s", gl_renderer);
         Printf(false, " %Ft   version  %E%s", gl_version);
     }
+
+    #if defined(_OPENMP)
+        Printf(false, " %FtOpenMP enabled");
+        Printf(false, " %Ft   threads  %E%d", omp_get_max_threads());
+    #endif
 }
 
 bool TextWindow::EditControlDoneForConfiguration(const std::string &s) {
@@ -371,7 +403,10 @@ bool TextWindow::EditControlDoneForConfiguration(const std::string &s) {
             SS.lightIntensity[edit.i] = min(1.0, max(0.0, atof(s.c_str())));
             SS.GW.Invalidate();
             break;
-
+        case Edit::LIGHT_AMBIENT:
+            SS.ambientIntensity = min(1.0, max(0.0, atof(s.c_str())));
+            SS.GW.Invalidate();
+            break;
         case Edit::LIGHT_DIRECTION: {
             double x, y, z;
             if(sscanf(s.c_str(), "%lf, %lf, %lf", &x, &y, &z)==3) {
@@ -519,6 +554,17 @@ bool TextWindow::EditControlDoneForConfiguration(const std::string &s) {
                 }
             } else {
                 Error(_("Bad format: specify interval in integral minutes"));
+            }
+            break;
+        }
+        case Edit::FIND_CONSTRAINT_TIMEOUT: {
+            int timeout = atoi(s.c_str());
+            if(timeout) {
+                if(timeout >= 1) {
+                    SS.timeoutRedundantConstr = timeout;
+                } else {
+                    SS.timeoutRedundantConstr = 1000;
+                }
             }
             break;
         }

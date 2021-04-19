@@ -20,6 +20,50 @@ void SShell::MakeFromIntersectionOf(SShell *a, SShell *b) {
     MakeFromBoolean(a, b, SSurface::CombineAs::INTERSECTION);
 }
 
+void SCurve::GetAxisAlignedBounding(Vector *ptMax, Vector *ptMin) const {
+    *ptMax = {VERY_NEGATIVE, VERY_NEGATIVE, VERY_NEGATIVE};
+    *ptMin = {VERY_POSITIVE, VERY_POSITIVE, VERY_POSITIVE};
+
+    for(int i = 0; i <= exact.deg; i++) {
+        exact.ctrl[i].MakeMaxMin(ptMax, ptMin);
+    }
+}
+
+// We will be inserting other curve verticies into our curves to split them.
+// This is helpful when curved surfaces become tangent along a trim and the
+// usual tests for curve-surface intersection don't split the curve at a vertex.
+// This is faster than the previous version that split at surface corners and
+// handles more buggy cases. It's not clear this is the best way but it works ok.
+static void FindVertsOnCurve(List<SInter> *l, const SCurve *curve, SShell *sh) {
+
+    Vector amax, amin;
+    curve->GetAxisAlignedBounding(&amax, &amin);
+
+    for(auto sc : sh->curve) {
+        if(!sc.isExact) continue;
+        
+        Vector cmax, cmin;
+        sc.GetAxisAlignedBounding(&cmax, &cmin);
+
+        if(Vector::BoundingBoxesDisjoint(amax, amin, cmax, cmin)) {
+            // They cannot possibly intersect, no curves to generate
+            continue;
+        }
+        
+        for(int i=0; i<2; i++) {
+            Vector pt = sc.exact.ctrl[ i==0 ? 0 : sc.exact.deg ];
+            double t;
+            curve->exact.ClosestPointTo(pt, &t, /*must converge=*/ false);
+            double d = pt.Minus(curve->exact.PointAt(t)).Magnitude();
+            if((t>LENGTH_EPS) && (t<(1.0-LENGTH_EPS)) && (d < LENGTH_EPS)) {
+                SInter inter;
+                inter.p = pt;
+                l->Add(&inter);
+            }
+        }
+    }
+}
+
 //-----------------------------------------------------------------------------
 // Take our original pwl curve. Wherever an edge intersects a surface within
 // either agnstA or agnstB, split the piecewise linear element. Then refine
@@ -35,12 +79,21 @@ SCurve SCurve::MakeCopySplitAgainst(SShell *agnstA, SShell *agnstB,
     ret = *this;
     ret.pts = {};
 
+    // First find any vertex that lies on our curve.
+    List<SInter> vertpts = {};
+    if(isExact) {
+        if(agnstA)
+            FindVertsOnCurve(&vertpts, this, agnstA);
+        if(agnstB)
+            FindVertsOnCurve(&vertpts, this, agnstB);
+    }
+    
     const SCurvePt *p = pts.First();
     ssassert(p != NULL, "Cannot split an empty curve");
     SCurvePt prev = *p;
     ret.pts.Add(p);
     p = pts.NextAfter(p);
-
+            
     for(; p; p = pts.NextAfter(p)) {
         List<SInter> il = {};
 
@@ -88,17 +141,34 @@ SCurve SCurve::MakeCopySplitAgainst(SShell *agnstA, SShell *agnstB,
                     }
                 }
 
-                // We're keeping the intersection, so actually refine it.
-                (pi->srf)->PointOnSurfaces(srfA, srfB, &(puv.x), &(puv.y));
+                // We're keeping the intersection, so actually refine it. Finding the intersection
+                // to within EPS is important to match the ends of different chopped trim curves.
+                // The general 3-surface intersection fails to refine for trims where surfaces
+                // are tangent at the curve, but those trims are usually exact, so…
+                if(isExact) {
+                    (pi->srf)->PointOnCurve(&exact, &(puv.x), &(puv.y));
+                } else {
+                    (pi->srf)->PointOnSurfaces(srfA, srfB, &(puv.x), &(puv.y));
+                }
                 pi->p = (pi->srf)->PointAt(puv);
             }
             il.RemoveTagged();
+        }
+        // Now add any vertex that is on this segment
+        const Vector lineStart     = prev.p;
+        const Vector lineDirection = (p->p).Minus(prev.p);
+        for(auto vtx : vertpts) {
+            double t = (vtx.p.Minus(lineStart)).DivProjected(lineDirection);
+            if((0.0 < t) && (t < 1.0)) {
+                il.Add(&vtx);
+            }
+        }
+        if(!il.IsEmpty()) {
+            SInter *pi;
 
             // And now sort them in order along the line. Note that we must
             // do that after refining, in case the refining would make two
             // points switch places.
-            const Vector lineStart     = prev.p;
-            const Vector lineDirection = (p->p).Minus(prev.p);
             std::sort(il.begin(), il.end(), [&](const SInter &a, const SInter &b) {
                 double ta = (a.p.Minus(lineStart)).DivProjected(lineDirection);
                 double tb = (b.p.Minus(lineStart)).DivProjected(lineDirection);
@@ -126,20 +196,24 @@ SCurve SCurve::MakeCopySplitAgainst(SShell *agnstA, SShell *agnstB,
         ret.pts.Add(p);
         prev = *p;
     }
+    vertpts.Clear();
     return ret;
 }
 
 void SShell::CopyCurvesSplitAgainst(bool opA, SShell *agnst, SShell *into) {
-    SCurve *sc;
-    for(sc = curve.First(); sc; sc = curve.NextAfter(sc)) {
+#pragma omp parallel for
+    for(int i=0; i<curve.n; i++) {
+        SCurve *sc = &curve[i];
         SCurve scn = sc->MakeCopySplitAgainst(agnst, NULL,
                                 surface.FindById(sc->surfA),
                                 surface.FindById(sc->surfB));
         scn.source = opA ? SCurve::Source::A : SCurve::Source::B;
-
-        hSCurve hsc = into->curve.AddAndAssignId(&scn);
-        // And note the new ID so that we can rewrite the trims appropriately
-        sc->newH = hsc;
+#pragma omp critical
+        {
+            hSCurve hsc = into->curve.AddAndAssignId(&scn);
+            // And note the new ID so that we can rewrite the trims appropriately
+            sc->newH = hsc;
+        }
     }
 }
 
@@ -379,11 +453,17 @@ void SSurface::EdgeNormalsWithinSurface(Point2d auv, Point2d buv,
            enxyz = (ab.Cross(*surfn)).WithMagnitude(SS.ChordTolMm());
     // And based on that, compute the edge's inner normal in uv space. This
     // vector is perpendicular to the edge in xyz, but not necessarily in uv.
-    Vector tu, tv;
+    Vector tu, tv, tx, ty;
     TangentsAt(muv.x, muv.y, &tu, &tv);
+    Vector n = tu.Cross(tv);
+    // since tu and tv may not be orthogonal, use y in place of v, x in place of u.
+    // |y| = |v|sin(theta) where theta is the angle between tu and tv.
+    ty = n.Cross(tu).ScaledBy(1.0/tu.MagSquared());
+    tx = tv.Cross(n).ScaledBy(1.0/tv.MagSquared());
+
     Point2d enuv;
-    enuv.x = enxyz.Dot(tu) / tu.MagSquared();
-    enuv.y = enxyz.Dot(tv) / tv.MagSquared();
+    enuv.x = enxyz.Dot(tx) / tx.MagSquared();
+    enuv.y = enxyz.Dot(ty) / ty.MagSquared();
 
     // Compute the inner and outer normals of this edge (within the srf),
     // in xyz space. These are not necessarily antiparallel, if the
@@ -441,49 +521,48 @@ SSurface SSurface::MakeCopyTrimAgainst(SShell *parent,
     SEdgeList inter = {};
 
     SSurface *ss;
-    for(ss = agnst->surface.First(); ss; ss = agnst->surface.NextAfter(ss)) {
-        SCurve *sc;
-        for(sc = into->curve.First(); sc; sc = into->curve.NextAfter(sc)) {
-            if(sc->source != SCurve::Source::INTERSECTION) continue;
-            if(opA) {
-                if(sc->surfA != h || sc->surfB != ss->h) continue;
-            } else {
-                if(sc->surfB != h || sc->surfA != ss->h) continue;
-            }
+    SCurve *sc;
+    for(sc = into->curve.First(); sc; sc = into->curve.NextAfter(sc)) {
+        if(sc->source != SCurve::Source::INTERSECTION) continue;
+        if(opA) {
+            if(sc->surfA != h) continue;
+            ss = shb->surface.FindById(sc->surfB);
+        } else {
+            if(sc->surfB != h) continue;
+            ss = sha->surface.FindById(sc->surfA);
+        }
+        int i;
+        for(i = 1; i < sc->pts.n; i++) {
+            Vector a = sc->pts[i-1].p,
+                   b = sc->pts[i].p;
 
-            int i;
-            for(i = 1; i < sc->pts.n; i++) {
-                Vector a = sc->pts[i-1].p,
-                       b = sc->pts[i].p;
+            Point2d auv, buv;
+            ss->ClosestPointTo(a, &(auv.x), &(auv.y));
+            ss->ClosestPointTo(b, &(buv.x), &(buv.y));
 
-                Point2d auv, buv;
-                ss->ClosestPointTo(a, &(auv.x), &(auv.y));
-                ss->ClosestPointTo(b, &(buv.x), &(buv.y));
+            SBspUv::Class c = (ss->bsp) ? ss->bsp->ClassifyEdge(auv, buv, ss) : SBspUv::Class::OUTSIDE;
+            if(c != SBspUv::Class::OUTSIDE) {
+                Vector ta = Vector::From(0, 0, 0);
+                Vector tb = Vector::From(0, 0, 0);
+                ret.ClosestPointTo(a, &(ta.x), &(ta.y));
+                ret.ClosestPointTo(b, &(tb.x), &(tb.y));
 
-                SBspUv::Class c = (ss->bsp) ? ss->bsp->ClassifyEdge(auv, buv, ss) : SBspUv::Class::OUTSIDE;
-                if(c != SBspUv::Class::OUTSIDE) {
-                    Vector ta = Vector::From(0, 0, 0);
-                    Vector tb = Vector::From(0, 0, 0);
-                    ret.ClosestPointTo(a, &(ta.x), &(ta.y));
-                    ret.ClosestPointTo(b, &(tb.x), &(tb.y));
+                Vector tn = ret.NormalAt(ta.x, ta.y);
+                Vector sn = ss->NormalAt(auv.x, auv.y);
 
-                    Vector tn = ret.NormalAt(ta.x, ta.y);
-                    Vector sn = ss->NormalAt(auv.x, auv.y);
-
-                    // We are subtracting the portion of our surface that
-                    // lies in the shell, so the in-plane edge normal should
-                    // point opposite to the surface normal.
-                    bool bkwds = true;
-                    if((tn.Cross(b.Minus(a))).Dot(sn) < 0) bkwds = !bkwds;
-                    if((type == SSurface::CombineAs::DIFFERENCE && !opA) ||
-                       (type == SSurface::CombineAs::INTERSECTION)) { // Invert all newly created edges for intersection
-                        bkwds = !bkwds;
-                    }
-                    if(bkwds) {
-                        inter.AddEdge(tb, ta, sc->h.v, 1);
-                    } else {
-                        inter.AddEdge(ta, tb, sc->h.v, 0);
-                    }
+                // We are subtracting the portion of our surface that
+                // lies in the shell, so the in-plane edge normal should
+                // point opposite to the surface normal.
+                bool bkwds = true;
+                if((tn.Cross(b.Minus(a))).Dot(sn) < 0) bkwds = !bkwds;
+                if((type == SSurface::CombineAs::DIFFERENCE && !opA) ||
+                   (type == SSurface::CombineAs::INTERSECTION)) { // Invert all newly created edges for intersection
+                    bkwds = !bkwds;
+                }
+                if(bkwds) {
+                    inter.AddEdge(tb, ta, sc->h.v, 1);
+                } else {
+                    inter.AddEdge(ta, tb, sc->h.v, 0);
                 }
             }
         }
@@ -612,23 +691,26 @@ SSurface SSurface::MakeCopyTrimAgainst(SShell *parent,
 }
 
 void SShell::CopySurfacesTrimAgainst(SShell *sha, SShell *shb, SShell *into, SSurface::CombineAs type) {
+    std::vector <SSurface> ssn(surface.n);
 #pragma omp parallel for
     for (int i = 0; i < surface.n; i++)
     {
         SSurface *ss = &surface[i];
-        SSurface ssn;
-        ssn = ss->MakeCopyTrimAgainst(this, sha, shb, into, type, i);
-#pragma omp critical
-        {
-            ss->newH = into->surface.AddAndAssignId(&ssn);
-        }
+        ssn[i] = ss->MakeCopyTrimAgainst(this, sha, shb, into, type, i);
+    }
+
+    for (int i = 0; i < surface.n; i++)
+    {
+        surface[i].newH = into->surface.AddAndAssignId(&ssn[i]);
     }
     I += surface.n;
 }
 
 void SShell::MakeIntersectionCurvesAgainst(SShell *agnst, SShell *into) {
-    SSurface *sa;
-    for(sa = surface.First(); sa; sa = surface.NextAfter(sa)) {
+#pragma omp parallel for
+    for(int i = 0; i< surface.n; i++) {
+        SSurface *sa = &surface[i];
+
         SSurface *sb;
         for(sb = agnst->surface.First(); sb; sb = agnst->surface.NextAfter(sb)){
             // Intersect every surface from our shell against every surface

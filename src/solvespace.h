@@ -83,9 +83,7 @@ using std::max;
 using std::swap;
 using std::fabs;
 
-#if defined(__GNUC__)
-__attribute__((noreturn))
-#endif
+[[noreturn]]
 void AssertFailure(const char *file, unsigned line, const char *function,
                    const char *condition, const char *message);
 
@@ -123,10 +121,6 @@ static constexpr double ANGLE_COS_EPS =  1e-6;
 static constexpr double LENGTH_EPS    =  1e-6;
 static constexpr double VERY_POSITIVE =  1e10;
 static constexpr double VERY_NEGATIVE = -1e10;
-
-inline double Random(double vmax) {
-    return (vmax*rand()) / RAND_MAX;
-}
 
 #include "platform/platform.h"
 #include "platform/gui.h"
@@ -274,7 +268,8 @@ public:
     void EvalJacobian();
 
     void WriteEquationsExceptFor(hConstraint hc, Group *g);
-    void FindWhichToRemoveToFixJacobian(Group *g, List<hConstraint> *bad, bool forceDofCheck);
+    void FindWhichToRemoveToFixJacobian(Group *g, List<hConstraint> *bad,
+                                        bool forceDofCheck);
     void SolveBySubstitution();
 
     bool IsDragged(hParam p);
@@ -345,6 +340,7 @@ public:
     virtual void Bezier(SBezier *sb) = 0;
     virtual void Triangle(STriangle *tr) = 0;
     virtual bool OutputConstraints(IdList<Constraint,hConstraint> *) { return false; }
+    virtual void Background(RgbaColor color) = 0;
     virtual void StartFile() = 0;
     virtual void FinishAndCloseFile() = 0;
     virtual bool HasCanvasSize() const = 0;
@@ -369,6 +365,7 @@ public:
                     bool filled, RgbaColor fillRgb, hStyle hs) override;
     void Triangle(STriangle *tr) override;
     void Bezier(SBezier *sb) override;
+    void Background(RgbaColor color) override;
     void StartFile() override;
     void FinishAndCloseFile() override;
     bool HasCanvasSize() const override { return false; }
@@ -386,6 +383,7 @@ public:
                     bool filled, RgbaColor fillRgb, hStyle hs) override;
     void Triangle(STriangle *tr) override;
     void Bezier(SBezier *sb) override;
+    void Background(RgbaColor color) override;
     void StartFile() override;
     void FinishAndCloseFile() override;
     bool HasCanvasSize() const override { return true; }
@@ -404,6 +402,7 @@ public:
                     bool filled, RgbaColor fillRgb, hStyle hs) override;
     void Triangle(STriangle *tr) override;
     void Bezier(SBezier *sb) override;
+    void Background(RgbaColor color) override;
     void StartFile() override;
     void FinishAndCloseFile() override;
     bool HasCanvasSize() const override { return true; }
@@ -420,6 +419,7 @@ public:
                     bool filled, RgbaColor fillRgb, hStyle hs) override;
     void Triangle(STriangle *tr) override;
     void Bezier(SBezier *sb) override;
+    void Background(RgbaColor color) override;
     void StartFile() override;
     void FinishAndCloseFile() override;
     bool HasCanvasSize() const override { return true; }
@@ -434,6 +434,7 @@ public:
                     bool filled, RgbaColor fillRgb, hStyle hs) override;
     void Triangle(STriangle *tr) override;
     void Bezier(SBezier *sb) override;
+    void Background(RgbaColor color) override;
     void StartFile() override;
     void FinishAndCloseFile() override;
     bool HasCanvasSize() const override { return false; }
@@ -447,6 +448,7 @@ class Step2dFileWriter : public VectorFileWriter {
                     bool filled, RgbaColor fillRgb, hStyle hs) override;
     void Triangle(STriangle *tr) override;
     void Bezier(SBezier *sb) override;
+    void Background(RgbaColor color) override;
     void StartFile() override;
     void FinishAndCloseFile() override;
     bool HasCanvasSize() const override { return false; }
@@ -461,6 +463,7 @@ public:
                     bool filled, RgbaColor fillRgb, hStyle hs) override;
     void Triangle(STriangle *tr) override;
     void Bezier(SBezier *sb) override;
+    void Background(RgbaColor color) override;
     void StartFile() override;
     void FinishAndCloseFile() override;
     bool HasCanvasSize() const override { return false; }
@@ -510,7 +513,7 @@ public:
     GraphicsWindow              GW;
 
     // The state for undo/redo
-    typedef struct {
+    typedef struct UndoState {
         IdList<Group,hGroup>            group;
         List<hGroup>                    groupOrder;
         IdList<Request,hRequest>        request;
@@ -527,7 +530,7 @@ public:
             style.Clear();
         }
     } UndoState;
-    enum { MAX_UNDO = 16 };
+    enum { MAX_UNDO = 100 };
     typedef struct {
         UndoState   d[MAX_UNDO];
         int         cnt;
@@ -560,11 +563,13 @@ public:
     int      maxSegments;
     double   exportChordTol;
     int      exportMaxSegments;
+    int      timeoutRedundantConstr; //milliseconds
     double   cameraTangent;
     double   gridSpacing;
     double   exportScale;
     double   exportOffset;
     bool     fixExportColors;
+    bool     exportBackgroundColor;
     bool     drawBackFaces;
     bool     showContourAreas;
     bool     checkClosedContour;
@@ -674,12 +679,13 @@ public:
     void UpgradeLegacyData();
     bool LoadEntitiesFromFile(const Platform::Path &filename, EntityList *le,
                               SMesh *m, SShell *sh);
+    bool LoadEntitiesFromSlvs(const Platform::Path &filename, EntityList *le,
+                              SMesh *m, SShell *sh);
     bool ReloadAllLinked(const Platform::Path &filename, bool canCancel = false);
     // And the various export options
     void ExportAsPngTo(const Platform::Path &filename);
     void ExportMeshTo(const Platform::Path &filename);
     void ExportMeshAsStlTo(FILE *f, SMesh *sm);
-    void ExportMeshAsQ3doTo(FILE *f, SMesh *sm);
     void ExportMeshAsObjTo(FILE *fObj, FILE *fMtl, SMesh *sm);
     void ExportMeshAsThreeJsTo(FILE *f, const Platform::Path &filename,
                                SMesh *sm, SOutlineList *sol);
@@ -805,6 +811,7 @@ public:
 
 void ImportDxf(const Platform::Path &file);
 void ImportDwg(const Platform::Path &file);
+bool LinkIDF(const Platform::Path &filename, EntityList *le, SMesh *m, SShell *sh);
 
 extern SolveSpaceUI SS;
 extern Sketch SK;

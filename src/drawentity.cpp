@@ -26,7 +26,7 @@ void Entity::GenerateEdges(SEdgeList *el) {
         List<Vector> lv = {};
         sb->MakePwlInto(&lv);
         for(int j = 1; j < lv.n; j++) {
-            el->AddEdge(lv[j-1], lv[j], style.v, i);
+            el->AddEdge(lv[j-1], lv[j], Style::ForEntity(h).v, i);
         }
         lv.Clear();
     }
@@ -64,13 +64,13 @@ BBox Entity::GetOrGenerateScreenBBox(bool *hasBBox) {
         Vector proj = SS.GW.ProjectPoint3(PointGetNum());
         screenBBox = BBox::From(proj, proj);
     } else if(IsNormal()) {
-        Vector proj = SK.GetEntity(point[0])->PointGetNum();
+        Vector proj = SS.GW.ProjectPoint3(SK.GetEntity(point[0])->PointGetNum());
         screenBBox = BBox::From(proj, proj);
     } else if(!sbl->l.IsEmpty()) {
         Vector first = SS.GW.ProjectPoint3(sbl->l[0].ctrl[0]);
         screenBBox = BBox::From(first, first);
         for(auto &sb : sbl->l) {
-            for(int i = 0; i < sb.deg; ++i) { screenBBox.Include(SS.GW.ProjectPoint3(sb.ctrl[i])); }
+            for(int i = 0; i <= sb.deg; ++i) { screenBBox.Include(SS.GW.ProjectPoint3(sb.ctrl[i])); }
         }
     } else
         ssassert(false, "Expected entity to be a point or have beziers");
@@ -121,6 +121,7 @@ void Entity::GetReferencePoints(std::vector<Vector> *refs) {
         case Type::FACE_N_TRANS:
         case Type::FACE_N_ROT_AA:
         case Type::FACE_ROT_NORMAL_PT:
+        case Type::FACE_N_ROT_AXIS_TRANS:
             break;
     }
 }
@@ -176,6 +177,24 @@ bool Entity::IsVisible() const {
 
     if(forceHidden) return false;
 
+    return true;
+}
+
+// entities that were created via some copy types will not be
+// draggable with the mouse. We identify the undraggables here
+bool Entity::CanBeDragged() const {
+    // a numeric copy can not move
+    if(type == Entity::Type::POINT_N_COPY) return false;
+    // these transforms applied zero times can not be moved
+    if(((type == Entity::Type::POINT_N_TRANS) ||
+       (type == Entity::Type::POINT_N_ROT_AA) ||
+       (type == Entity::Type::POINT_N_ROT_AXIS_TRANS))
+        && (timesApplied == 0)) return false;
+    // for these types of entities the first point will indicate draggability
+    if(HasEndpoints() || type == Entity::Type::CIRCLE) {
+        return SK.GetEntity(point[0])->CanBeDragged();
+    }
+    // if we're not certain it can't be dragged then default to true
     return true;
 }
 
@@ -296,9 +315,13 @@ void Entity::ComputeInterpolatingSpline(SBezierList *sbl, bool periodic) const {
             } else {
                 // The wrapping would work, except when n = 1 and everything
                 // wraps to zero...
-                if(i > 0)     bm.A[i][i - 1] = eq.x;
-                /**/          bm.A[i][i]     = eq.y;
-                if(i < (n-1)) bm.A[i][i + 1] = eq.z;
+                if(i > 0) {
+                    bm.A[i][i - 1] = eq.x;
+                }
+                bm.A[i][i] = eq.y;
+                if(i < (n-1)) {
+                    bm.A[i][i + 1] = eq.z;
+                }
             }
         }
         bm.Solve();
@@ -439,7 +462,7 @@ void Entity::GenerateBezierCurves(SBezierList *sbl) const {
 
     // Record our style for all of the Beziers that we just created.
     for(; i < sbl->l.n; i++) {
-        sbl->l[i].auxA = style.v;
+        sbl->l[i].auxA = Style::ForEntity(h).v;
     }
 }
 
@@ -449,13 +472,13 @@ void Entity::Draw(DrawAs how, Canvas *canvas) {
 
     int zIndex;
     if(IsPoint()) {
-        zIndex = 5;
+        zIndex = 6;
     } else if(how == DrawAs::HIDDEN) {
         zIndex = 2;
     } else if(group != SS.GW.activeGroup) {
         zIndex = 3;
     } else {
-        zIndex = 4;
+        zIndex = 5;
     }
 
     hStyle hs;
@@ -465,6 +488,9 @@ void Entity::Draw(DrawAs how, Canvas *canvas) {
         hs.v = Style::NORMALS;
     } else {
         hs = Style::ForEntity(h);
+        if (hs.v == Style::CONSTRUCTION) {
+            zIndex = 4;
+        }
     }
 
     Canvas::Stroke stroke = Style::Stroke(hs);
@@ -589,7 +615,7 @@ void Entity::Draw(DrawAs how, Canvas *canvas) {
                     double w = 60 - camera.width  / 2.0;
                     // Shift the axis to the right if they would overlap with the toolbar.
                     if(SS.showToolbar) {
-                        if(h + 30 > -(34*16 + 3*16 + 8) / 2)
+                        if(h + 30 > -(32*18 + 3*16 + 8) / 2)
                             w += 60;
                     }
                     tail = camera.projRight.ScaledBy(w/s).Plus(
@@ -757,6 +783,7 @@ void Entity::Draw(DrawAs how, Canvas *canvas) {
         case Type::FACE_N_TRANS:
         case Type::FACE_N_ROT_AA:
         case Type::FACE_ROT_NORMAL_PT:
+        case Type::FACE_N_ROT_AXIS_TRANS:
             // Do nothing; these are drawn with the triangle mesh
             return;
     }

@@ -371,6 +371,7 @@ MenuBarRef GetOrCreateMainMenu(bool *unique) {
 
 - (id)initWithFrame:(NSRect)frameRect {
     NSOpenGLPixelFormatAttribute attrs[] = {
+        NSOpenGLPFADoubleBuffer,
         NSOpenGLPFAColorSize, 24,
         NSOpenGLPFADepthSize, 24,
         0
@@ -458,13 +459,25 @@ MenuBarRef GetOrCreateMainMenu(bool *unique) {
     }
 }
 
+- (void)mouseMotionEvent:(NSEvent *)nsEvent withButton:(Platform::MouseEvent::Button)button {
+    using Platform::MouseEvent;
+
+    MouseEvent event = [self convertMouseEvent:nsEvent];
+    event.type   = MouseEvent::Type::MOTION;
+    event.button = button;
+
+    if(receiver->onMouseEvent) {
+        receiver->onMouseEvent(event);
+    }
+}
+
 - (void)mouseMoved:(NSEvent *)nsEvent {
     [self mouseMotionEvent:nsEvent];
     [super mouseMoved:nsEvent];
 }
 
 - (void)mouseDragged:(NSEvent *)nsEvent {
-    [self mouseMotionEvent:nsEvent];
+    [self mouseMotionEvent:nsEvent withButton:Platform::MouseEvent::Button::LEFT];
 }
 
 - (void)otherMouseDragged:(NSEvent *)nsEvent {
@@ -541,7 +554,9 @@ MenuBarRef GetOrCreateMainMenu(bool *unique) {
 
     MouseEvent event = [self convertMouseEvent:nsEvent];
     event.type = MouseEvent::Type::SCROLL_VERT;
-    event.scrollDelta = [nsEvent deltaY];
+
+    bool isPrecise = [nsEvent hasPreciseScrollingDeltas];
+    event.scrollDelta = [nsEvent scrollingDeltaY] / (isPrecise ? 50 : 5);
 
     if(receiver->onMouseEvent) {
         receiver->onMouseEvent(event);
@@ -962,9 +977,6 @@ public:
         if(GetScrollbarPosition() == pos)
             return;
         [nsScroller setDoubleValue:(pos / (ssView.scrollerMax - ssView.scrollerMin))];
-        if(onScrollbarAdjusted) {
-            onScrollbarAdjusted(pos);
-        }
     }
 
     void Invalidate() override {
@@ -1259,6 +1271,10 @@ public:
         nsPanel.directoryURL =
             [NSURL fileURLWithPath:Wrap(path.Parent().raw) isDirectory:YES];
         nsPanel.nameFieldStringValue = Wrap(path.FileStem());
+    }
+
+    void SuggestFilename(Platform::Path path) override {
+        SetFilename(path.WithExtension(""));
     }
 
     void FreezeChoices(SettingsRef settings, const std::string &key) override {
